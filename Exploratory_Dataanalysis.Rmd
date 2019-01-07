@@ -1,0 +1,185 @@
+---
+title: "Milestone Report - Exploratory Data Analysis for NLP"
+author: "JW"
+date: "28 Dezember 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Captstone Project description
+
+The goal of the capstone project is to built predictive models for natural language processing. Natural language processing is the task to program computers to handle large amounts of natural language data for further analysis. The goal here is to predict the next word one is going to type when one has already started typing a sentence. For this task we use natural language data given by SwiftKey (https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) to analyse words which are commonly used together. 
+
+## Report Summary
+
+This reports gives an overview of the exploratory data analysis done on base of the given data. It describes the goals for creating the prediction algorithm and the main features of the shiny app, which will be built as a frontend.
+
+## Getting and cleaning the data
+
+The data is first read in and cleaned (punctuation removal etc.). Afterwards we look for unigrams, bigrams, trigrams and fourgrams. These are word sequences of length 1,2,3 or 4.
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidytext)
+library(ggplot2)
+library(tidyr)
+library(VGAM)
+data("stop_words")
+```
+
+
+```{r}
+textLinesBlog<-readLines("en_US.blogs.txt", encoding="UTF-8")
+textLinesTwitter<-readLines("en_US.twitter.txt", encoding="UTF-8") #2360148
+textLinesNews<-readLines("en_US.news.txt", encoding="UTF-8") #SUBs were manually removed via Notepad##
+textLines<-c(textLinesBlog, textLinesTwitter,textLinesNews)
+trainingSet<-sample(textLines, length(textLines)*0.1)#*0.6)
+#testSet<-sample(setdiff(textLines, trainingSet), length(textLines)*0.2)
+#validationSet<-setdiff(setdiff(textLines, trainingSet), testSet)
+```
+
+
+```{r}
+footer<-grep(".+ is a participant in the Amazon Services LLC and Amazon EU Associates Programmes designed to provide a means for sites to earn advertising fees by advertising and linking to amazon.com, amazon.ca, amazon.co.uk, amazon.de, amazon.fr, amazon.it and amazon.es. Certain content that appears on this website comes from Amazon Services LLC and/or Amazon EU. This content is provided \"as is\" and is subject to change or removal at any time.", trainingSet)
+html<-grep("style=\"background:", trainingSet)
+if(length(footer)>0) { trainingSet<-trainingSet[-footer] }
+if(length(html)>0) {trainingSet<-trainingSet[-html]}
+
+training_df<-data_frame(line=1:length(trainingSet), text=trainingSet)
+# token is a single word
+words<- training_df %>% unnest_tokens(word, text) 
+
+words_wo_sw <- words %>% anti_join(stop_words)
+
+# token is a bigram
+bigrams<- training_df %>% unnest_tokens(bigram, text, token="ngrams", n=2) %>% filter(bigram != "NA NA")
+bigrams_separated<- bigrams %>% separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_separated_wo_sw<-bigrams_separated %>% filter(!word1 %in% stop_words$word) %>% filter(!word2 %in% stop_words$word)
+bigrams_wo_sw <- bigrams_separated_wo_sw %>% unite(bigram, word1, word2, sep = " ") %>% filter(bigram != "NA NA")
+
+# token is a trigram
+trigrams<- training_df %>% unnest_tokens(trigram, text, token="ngrams", n=3) %>% filter(trigram != "NA NA NA")
+trigrams_separated<- trigrams %>% separate(trigram, c("word1", "word2", "word3"), sep = " ")
+
+# token is a 4-gram
+fourgrams<- training_df %>% unnest_tokens(fourgram, text, token="ngrams", n=4)  %>% filter(fourgram != "NA NA NA NA")
+fourgrams_separated<- fourgrams %>% separate(fourgram, c("word1", "word2", "word3", "word4"), sep = " ")
+```
+
+## Exploratory data analysis
+
+Here we describe the results of the exploratory analysis.
+
+We base our exploratory data analysis mainly on n-gram counts, because, as you will see later, this is needed for the prediction algorithm, as we can calculate the probability of n-gram occurences using their counts.
+
+### Distribution of words
+
+PLEASE READ BEFORE DOING anything else.
+https://stats.stackexchange.com/questions/6780/how-to-calculate-zipfs-law-coefficient-from-a-set-of-top-frequencies
+
+The frequency of a word, and for this it's probability of occurence, is inversely proportional to its rank in the frequency sorted dictionary. 
+This rule is known as Zipf's law.
+
+The set of all possible words with rank $n\in \{ 1..N \}$ is finite and for this we can state (please refer to wikipedia):
+$P(n) = 1/H_N * 1/n$, where $H_N = \sum_{n\in \{1...N\} } 1/n$, which is about $P(n)\approx 1/(n * ln(1.78 * N))$.
+
+To illustrate that, we plot the sample probablity vs. the probability approximated by Zipf's law for the TOP 100 words.
+
+```{r, echo=FALSE}
+c_words<-count(words, word, sort=TRUE)
+rank<-1:nrow(c_words)
+#c_words is already sorted
+c_words<-cbind(c_words, rank)
+c_words<-mutate(c_words, inv_rank = 1/rank, zipf=1/(rank*log(1.78*nrow(c_words))), sample = n/sum(c_words$n))
+c_words<-cbind(c_words, zipf_dens=dzipf(1:nrow(c_words), N=nrow(c_words), shape =1, log=FALSE) )
+first_100<-head(c_words, n=100)
+first_100_2<-cbind(first_100, zipf2=dzipf(1:100, N=100, shape=0.45, log=FALSE))
+dzipf(first_100, N=100, shape=shape, log=FALSE)
+plot(first_100$zipf~first_100$rank, type = "o", xlab="word rank", ylab = "probability")
+lines(first_100$sample, type="o", col="red")
+legend("topright", legend=c("sample", "Zipf's law"), lty=1, col=c("red", "black"), cex=0.8)
+```
+One can easily proof that a data set conforms to Zipf's law by plotting rank versus frequency on a log-log-scale. If the graph is linear the rule holds:
+
+Of course we can only estimate the coefficient $s$ for the Zipf distribution because we only 
+
+```{r, echo=FALSE}
+plot(log(c_words$n)~log(c_words$rank), xlab="log(rank)", ylab="log(frequency)")
+```
+
+So our data conforms to Zipf's law. We cound approximate the word frequency by its rank.
+
+### counts of n-grams with and without stopword removal
+
+To get a feeling for the texts used we analyse the most common stopwords and non-stopwords. 
+
+The ratio of stopwords compared to non-stopwords in the given data is:
+```{r, echo=FALSE}
+c_words_wo_sw<-count(words_wo_sw, word, sort=TRUE)
+nrow(c_words_wo_sw)/nrow(c_words)
+```
+As expected this is a lot. It is very probable, when predicting a word, that this word is a stopword.
+
+It follows a comparison of word counts for stopwords vs. non-stopwords. 
+
+```{r, echo=FALSE}
+words1<-head(c_words, n=40) %>% mutate(word = reorder(word, n)) %>% ggplot(aes(word, n)) + geom_col() + xlab(NULL) +ylab("count")+ coord_flip()
+words2<-head(c_words_wo_sw, n=40) %>% mutate(word = reorder(word, n)) %>% ggplot(aes(word, n)) + geom_col() + xlab(NULL) +ylab("count") + coord_flip()
+cowplot::plot_grid(words1,words2)
+```
+
+For bigrams this looks quite familiar:
+
+```{r, echo=FALSE}
+c_bigrams<-count(bigrams, bigram, sort=TRUE)
+c_bigrams_wo_sw<-count(bigrams_wo_sw, bigram, sort=TRUE)
+nrow(c_bigrams_wo_sw)/nrow(c_bigrams)
+br1<-head(c_bigrams, n=40) %>% mutate(bigram = reorder(bigram, n)) %>% ggplot(aes(bigram, n)) + geom_col() + xlab(NULL)+ylab("count") + coord_flip()
+bg2<-head(c_bigrams_wo_sw, n=40) %>% mutate(bigram = reorder(bigram, n)) %>% ggplot(aes(bigram, n)) + geom_col() + xlab(NULL) +ylab("count")+ coord_flip()
+cowplot::plot_grid(br1,bg2)
+```
+
+One could see that without removing stop words all tokens with the highest counts consist completely or nearly of stop words. But one could type a stop word and we need a prediction for this also. 
+As one might expect, the percentage of n-grams without any stopwords compared to n-grams with and without stopwords get lower and lower the longer the tokens get. Of course the longer the tokens get the less ofter they appear.
+
+This is illustrated here again by comparing counts of trigrams with and without stopwords.
+
+```{r, echo=FALSE}
+c_trigrams<-count(trigrams, trigram, sort=TRUE)
+c_trigrams_wo_sw<-count(trigrams_wo_sw, trigram, sort=TRUE)
+nrow(c_trigrams_wo_sw)/nrow(c_trigrams)
+tg1<-head(c_trigrams, n=40) %>% mutate(trigram = reorder(trigram, n)) %>% ggplot(aes(trigram, n)) + geom_col() + xlab(NULL) + coord_flip()
+tg2<-head(c_trigrams_wo_sw, n=40) %>% mutate(trigram = reorder(trigram, n)) %>% ggplot(aes(trigram, n)) + geom_col() + xlab(NULL) +ylab("count")+ coord_flip()
+cowplot::plot_grid(p1,p2)
+```
+
+### Converage of dictionaries by words
+
+How many unique words do you need in a frequency sorted dictionary to cover 50% of all word instances in the language? 90%?  
+
+We are looking for the rank for which the sum of probablities from 1 to this rank sum up to 0.5.
+```{r}
+sum(filter(c_words, rank<=114)$sample)
+```
+
+5.  Can you think of a way to increase the coverage -- identifying words that may not be in the corpora or using a smaller number of words in the dictionary to cover the same number of phrases?
+
+## Statistical prediction/clustering
+
+To build our first model we first notice that when calculation the the probability of an n-gram, we can use the chain rule:
+Let $w$ be an n-gram of length $k$, so $w=(w_1 ... w_k)$, then:
+$P(w)=P((w_1... w_k))=P(w_1)P(w_1|w_2)...P(w_k|w_1 ... w_{k-1})$.
+
+But it's is hard to determine the probability of the last word given all the previous words. That's is why we need the markov assumption which states, that we can estimate this probability by only using the last few words, or even only the last word. With this assumption we get:
+$P(w)=P((w_1... w_k))=P(w_1)P(w_1|w_2)...P(w_k| w_{k-1})$.
+
+$P(w)=P((w_1... w_k))=P(w_1|start)P(w_1|w_2)...P(w_k| w_{k-1})*P(w_k|end)$.
+
+On base of this we can build n-gram models, also called markov models. The most easiest model is a unigram model. In this model, each word is a unite. This doesn't help us, so we start by building a bigram model. In this model we predict conditioned on the previous word. 
+n-gram models in general, even 5-gram oder bigger models, are not sufficient to estimate natural language, because there exist long distance relationsships, but for our scenario they are!
+
+
