@@ -1,0 +1,635 @@
+---
+title: "Captstone Project - predicting the next word"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# Problem description
+
+The goal of the capstone project is to built predictive models for natural language processing. Natural language processing is the task to program computers to handle large amounts of natural language data for further analysis.
+
+For this we will work with a dataset from SwiftKey. 
+
+The goal here is to predict the next word one is going to type when one has already started typing a sentence. For this task we use the given natural language data to analyse words which are commonly used together. 
+
+Throughout the project we will use the process learned so far:  
+1. Define the question  
+2. Define the ideal data set  
+3. Determine what data you can access  
+4. Obtain the data  
+5. Clean the data  
+6. Exploratory data analysis  
+7. Statistical prediction/clustering  
+8. Interpret results  
+9. Challenge results  
+10. Synthezise/write up results  
+11. Create reproducible code  
+12. Distribute results to other people  
+
+## Definining the question and the ideal data set
+
+This is a predictive analysis problem. The question we want to answer is:
+Given a collection of words, like the beginning of a sentence, what is/are the ( most probable ) word/s that come/s next?
+
+To answer this question one could think about the following data to use:  
+* a collection of natural language texts to analyze 
+* a list of abbreviations  
+* a list of synonyms  
+* a list of buzzwords which are "up-to-date" (e.g. on a specific date there was a special event everyone is talking about)  
+* informations about the semantics of language (sentence structure)
+* domain specific vocabulary
+
+
+## Researching accessible data
+
+Of course we have the data set given by SwiftKey (https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip). In this collection, there are 3 types of text sources (text from blogs, news and twitter) seperated by the main language used in the text. We will start by analysing the english data sets.
+
+### some comments to abbreviations
+
+To replace an abbreviation by its full name is a hard task to accomplish. For example if one types "US" you cannot be sure if one means the pronoun or the United States. So for further analysis we will do a very restrictive substitution.
+For now we will use the data set in the qdap Dictionaries R package (https://www.rdocumentation.org/packages/qdapDictionaries/versions/1.0.7). This package also holds some other data sets which might be helpful later.
+
+## Obtaining the data 
+
+### SwiftKey data
+The main data set we are going to use is the one given by SwiftKey. The data sets given are quite big.
+
+```{r read_data, message=FALSE, warning=FALSE}
+textLinesBlog<-readLines("en_US.blogs.txt", encoding="UTF-8", warn=FALSE)
+textLinesTwitter<-readLines("en_US.twitter.txt", encoding="UTF-8", warn=FALSE)
+textLinesNews<-readLines("en_US.news.txt", encoding="UTF-8", warn=FALSE)
+```
+
+To get an idea of the size of these documents we count the number of characters, words and lines in each document:
+```{r basic_stats, message=FALSE, echo=FALSE, warning=FALSE, cache=TRUE}
+library(ngram)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+#blog, twitter, news
+lines<-c(length(textLinesBlog), length(textLinesTwitter), length(textLinesNews))
+words<-c(wordcount(textLinesBlog, sep = " ", count.function = sum), wordcount(textLinesTwitter, sep = " ", count.function = sum), wordcount(textLinesNews, sep = " ", count.function = sum))
+characters<-c(sum(nchar(textLinesBlog)),  sum(nchar(textLinesTwitter)),  sum(nchar(textLinesNews)))
+basicFigures<-as.data.frame(rbind(lines, words, characters)) %>% rename(blog=V1, twitter=V2, news=V3)
+basicFigures
+```
+
+### Other data
+
+A list of abbreviations is given by:
+```{r get_abbr, warning=FALSE}
+library(qdapDictionaries)
+data("abbreviations")
+head(abbreviations)
+```
+
+A list of stopwords is given by:
+```{r get_stop, message=FALSE, warning=FALSE}
+library(tidytext)
+data(stop_words)
+head(stop_words)
+```
+
+## Cleaning the data
+
+Tidy data has by definition the following attributes:  
+
+- each variable is in one column  
+- each observation is in one row  
+- there is one table for each "kind" of variable  
+- there is a row with the column names  
+- variable names should be human readable  
+
+For natural language this is no other. The tidy text format is a table with "one-token-by-row". Therefore we have to so called tokezine our data. A token is a meaningful unit of text, such as a word or a sentence. Tokenizing means splitting the text data into tokens.
+
+We start by generating random samples of the text files, one sample file for each source file given.
+```{r sample}
+set.seed(1111)
+blogSample<-sample(textLinesBlog, length(textLinesBlog)*0.01)
+newsSample<-sample(textLinesNews, length(textLinesNews)*0.01)
+twitterSample<-sample(textLinesTwitter, length(textLinesTwitter)*0.01)
+```
+
+We are going to tokenize the given data, with sentences as tokens, so we don't loose any syntantic information. After tokenizing we split the data set into training and test set and do cleaning etc.
+
+We split the text at punctuation and digits, because we cannot be sure about the context there. 
+
+Afterwards we make the following transformations:
+
+-  whitespace removal (leading, trailing and in between)
+-  deleting empty strings
+-  lower case conversion
+
+```{r clean, warning=FALSE, message=FALSE, echo=FALSE, cache=TRUE}
+library(tidytext)
+library(dplyr)
+library(tidyverse)
+blogSampleText<-paste(blogSample, " ")
+cleanBlog<-strsplit(blogSampleText, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist() %>% iconv( "UTF-8", "ASCII", sub="") %>% str_squish() %>% tolower()
+cleanBlog<-cleanBlog[cleanBlog != ""]
+newsSampleText<-paste(newsSample, " ")
+cleanNews<-strsplit(newsSampleText, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist() %>% iconv( "UTF-8", "ASCII", sub="")%>% str_squish() %>% tolower()
+cleanNews<-cleanNews[cleanNews != ""]
+twitterSampleText<-paste(twitterSample, " ")
+cleanTwitter<-strsplit(twitterSampleText, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist() %>% iconv( "UTF-8", "ASCII", sub="") %>% str_squish() %>% tolower()
+cleanTwitter<-cleanTwitter[cleanTwitter != ""]
+
+sampleData<-data_frame(line=1:length(cleanBlog), source='blog', text=cleanBlog)
+sampleData<-rbind(sampleData, data_frame(line=1:length(cleanNews), source='news', text=cleanNews))
+sampleData<-rbind(sampleData, data_frame(line=1:length(cleanTwitter), source='twitter', text=cleanTwitter))
+head(sampleData)
+```
+
+```{r}
+length(grep("marital", sampleData$text, value=TRUE))
+```
+
+Based on this dataframe we now go on with tokenizing.
+
+```{r tokenize, message=FALSE, warning=FALSE, echo=FALSE, cache=TRUE}
+stopWords<-as.data.frame(unique(stop_words$word))%>%rename(word='unique(stop_words$word)')%>%mutate(isStopWord=TRUE)
+
+#unigrams
+words<- sampleData %>% unnest_tokens(word, text) %>% left_join(stopWords, by="word")%>%mutate(isStopWord = if_else(is.na(isStopWord), FALSE, isStopWord))
+head(words, n=3)
+```
+
+```{r tokenize_bi, message=FALSE, warning=FALSE, echo=FALSE, cache=TRUE}
+library(knitr)
+#library(kableExtra)
+#bigrams
+bigrams<- sampleData %>% unnest_tokens(bigram, text, token="ngrams", n=2) %>% filter(!is.na(bigram))%>% separate(bigram, c("word1", "word2"), sep = " ", remove=FALSE)
+bigrams<-left_join(bigrams, stopWords, by = c("word1" = "word"))%>%left_join(stopWords, by = c("word2" = "word"))%>% mutate(isStopWord.x = if_else(is.na(isStopWord.x), FALSE, isStopWord.x), isStopWord.y = if_else(is.na(isStopWord.y), FALSE, isStopWord.y))%>%mutate(includesStopWord=(isStopWord.x | isStopWord.y)) %>%select(c("line", "source", "bigram", "word1", "word2", "includesStopWord"))
+head(bigrams)
+```
+
+```{r tokenize_tri, message=FALSE, warning=FALSE, echo=FALSE, cache=TRUE}
+#trigrams
+trigrams<- sampleData %>% unnest_tokens(trigram, text, token="ngrams", n=3) %>% filter(!is.na(trigram))%>% separate(trigram, c("word1", "word2", "word3"), sep = " ", remove=FALSE)
+trigrams<-left_join(trigrams, stopWords, by = c("word1" = "word")) %>% left_join(stopWords, by = c("word2" = "word")) %>% left_join(stopWords, by = c("word3" = "word")) %>% mutate(isStopWord.x = if_else(is.na(isStopWord.x), FALSE, isStopWord.x), isStopWord.y = if_else(is.na(isStopWord.y), FALSE, isStopWord.y), isStopWord = if_else(is.na(isStopWord), FALSE, isStopWord))%>%mutate(includesStopWord=(isStopWord.x | isStopWord.y |isStopWord)) %>%select(c("line", "source", "trigram", "word1", "word2", "word3", "includesStopWord"))
+head(trigrams)
+```
+
+```{r tokenize_four, message=FALSE, warning=FALSE, echo=FALSE, cache=TRUE}
+#fourgrams
+fourgrams<- sampleData %>% unnest_tokens(fourgram, text, token="ngrams", n=4) %>% filter(!is.na(fourgram))%>% separate(fourgram, c("word1", "word2", "word3", "word4"), sep = " ", remove=FALSE)
+fourgrams<-left_join(fourgrams, stopWords, by = c("word1" = "word")) %>% left_join(stopWords, by = c("word2" = "word")) %>% left_join(stopWords, by = c("word3" = "word")) %>% left_join(stopWords, by = c("word4" = "word")) %>% mutate(isStopWord.x = if_else(is.na(isStopWord.x), FALSE, isStopWord.x), isStopWord.y = if_else(is.na(isStopWord.y), FALSE, isStopWord.y), isStopWord.x.x = if_else(is.na(isStopWord.x.x), FALSE, isStopWord.x.x), isStopWord.y.y = if_else(is.na(isStopWord.y.y), FALSE, isStopWord.y.y))%>%mutate(includesStopWord=(isStopWord.x | isStopWord.y |isStopWord.x.x | isStopWord.y.y)) %>%select(c("line", "source", "fourgram", "word1", "word2", "word3", "word4", "includesStopWord"))
+head(fourgrams)
+```
+
+## Exploratory data analysis
+
+
+The goal of the explorary data analysis is to get some feeling for the data, which means, e.g. finding patterns and understanding data properties. Also the exploratory analysis can suggest a modelling strategy for the next step of the data analysis.
+
+Explorary analysis is mainly done by generating many graphs, quick and dirty. While generating them, there are some principles to follow:
+
+- principle 1: show comparisons: evidence for an hypothesis is always relative to a competing hypothesis
+- principle 2: show causality, mechanism, explanation, systematic structure
+- principle 3: show multivariate data, as the real world is multivariate
+- principle 4: integration of evidence
+- principle 5: describe and document the evidence with appropriate labels, sources, etc: a data graphic should tell a complete story that is credible
+- principle 6: content is king
+
+Clustering and dimension reduction can be part of the exploratory data analysis.
+
+### Exploratory analysis of unigrams
+
+```{r}
+head(words)
+tail(words)
+```
+
+```{r basic_expl, warning=FALSE, message=FALSE, echo=FALSE}
+library(ggplot2)
+library(cowplot)
+library(wordcloud)
+library(maditr)
+library(dplyr)
+library(tidyverse)
+# calculate count of each unigram grouped by source
+wordStatistics<-words%>% group_by(source, word, isStopWord)%>%summarize(n=n())%>%dcast(word+isStopWord~source, value.var="n") %>% mutate_all(funs(replace_na(.,0))) %>% mutate( frequency=blog+news+twitter) 
+
+wordcloudBase<-filter(wordStatistics, isStopWord==FALSE)
+
+# print some nice diagrams
+wordcloud(words=wordcloudBase$word, freq=wordcloudBase$frequency, min.freq=1, scale = c(4, 0.2), max.words=80, random.order=FALSE,rot.per=0.35, colors=brewer.pal(8, "Set1"))
+
+```
+
+Another way to show this is via a histogram. For this we order the words by frequency and print the first $35$ words.
+```{r plot_words, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+wordWoStopwordsPlot<-wordStatistics%>%filter(isStopWord==FALSE)%>% arrange(desc(frequency)) %>% head(n=35) %>% mutate(word=reorder(word, frequency)) %>% ggplot(aes(word, frequency)) + geom_col(fill='steelblue2') + xlab(NULL) + coord_flip() +ggtitle("most frequent words/no stopwords")+theme(plot.title = element_text(size = 12, face = "bold"), axis.text.y = element_text(size=8), text=element_text(size=10), axis.text.x=element_text(size=10))#+labs(x="frequency")
+wordPlot<-wordStatistics %>% arrange(desc(frequency)) %>% head(n=35)  %>% mutate(word=reorder(word, frequency)) %>% ggplot(aes(word, frequency)) + geom_col(fill='lightskyblue2') + xlab(NULL)+ coord_flip()+ ggtitle("most frequent words")+theme(plot.title = element_text(size = 12, face = "bold"), axis.text.y = element_text(size=8), text=element_text(size=10), axis.text.x=element_text(size=10)) 
+cowplot::plot_grid(wordWoStopwordsPlot,wordPlot)
+```
+
+#### distribution of unigrams
+The frequency of a word, and for this it's probability of occurence, is inversely proportional to its rank in the frequency sorted dictionary. This rule is known as Zipf's law.  This proposes the we are going to investigate the distribution of word counts depending on the word rank in the dictionary.
+
+We plot here the distribution of our training set for the first 500 words, so we skip the "tail". The frequency is somehow normalized as to depict the "sample probability".
+
+```{r prep_stat, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE }
+library(dplyr)
+rank<-1:nrow(wordStatistics)
+sumCount<-sum(wordStatistics$frequency)
+wordStatistics<-arrange(wordStatistics, desc(frequency)) %>% cbind(rank) %>% mutate(relativeFrequency=frequency/sumCount)
+```
+
+
+If we plot the relative count on a log-log-scale, the graph suggests a general linear model.
+
+```{r lm_smoother, echo=FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+ggplot(data=head(wordStatistics, n=500), aes(x=log(rank), y=log(relativeFrequency)))+geom_line(aes(color="sample"), size=1)+geom_point(aes(color="sample")) + xlab("log(rank)")+ylab("log(relative frequency)")+ geom_smooth(method="lm", size=1, aes(color="smoother")) + scale_color_manual(name = "legend", values = c("steelblue2","red"))
+```
+
+
+So we are going to try to estimate the distribution using the following model:
+
+$$ y = \alpha r^{\beta} $$where $r$ is the rank of the word and $y$ is the relative frequency. Doing a log-transformation we get:
+$$ \log(y) = \log(\alpha) + \beta\log(r) $$. 
+
+We can simple estimate this now using $lm$:
+
+```{r lm_est, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+linearModel<-lm(log(head(wordStatistics, n=500)$rank)~log(head(wordStatistics, n=500)$relativeFrequency))
+intercept = linearModel$coefficients[1]
+factor = linearModel$coefficients[2]
+wordStatistics<-mutate(wordStatistics, calculatedRelativeFrequency=(exp(1)^intercept)*(rank^(factor)))
+summary(linearModel)
+```
+
+The p-value is significantly small, R square is significantly high. So this seems to be a good fit to the data given.
+
+```{r plot_resid, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE} 
+ggplot(data=head(wordStatistics, n=500), aes(x=log(rank), y=resid(linearModel)))+geom_point(color="steelblue2") + geom_hline(yintercept=0, color="red", size=0.5)+ xlab("log(rank)")+ylab("residual")
+```
+
+There are stronger differences for lower ranks, but in general there is no obvious pattern in the residuals plot. If we plot the calcucated relative frequencies and the sample relative frequencies we can see, that the model fits well. 
+
+```{r plot_model, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+ggplot(data=head(wordStatistics, n=500), aes(x=rank))+geom_line(aes(y=relativeFrequency,color="sample"), size=1)+geom_point(aes(y=relativeFrequency),color="steelblue2") + geom_line(aes(y=calculatedRelativeFrequency,color="log-log-model"), size=1)+ scale_color_manual(name = "legend", values = c("red","steelblue2"))+ xlab("log(rank)")+ylab("log(relative frequency)")
+```
+
+Only the first ranks have a stronger difference. Because these are the ranks with the highest frequency this is a problem if we want to estimate how many unique words we need in a frequency sorted dictionary to cover 50% of all word instances in the sample text.
+
+#### Answering questions with the distribution
+
+##### How many unique words do you need in a frequency sorted dictionary to cover 50% of all word instances in the language? 90%?  
+
+We calculate the rank of the word here, for which the dictionary would cover 50/90/... % of word instances in our sample.
+
+If we calculate this using the log-log-linear model, we get:
+If we calculate this using the log-log-linear model, we get:
+```{r calc_model_coverage, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+find_rank_to_coverage<-function(log_log_model, coverage){
+  #coverage in decimal
+  freq_sum=0
+  rank=1
+  repeat{
+    freq_sum=freq_sum+(exp(1)^log_log_model$coefficients[1])*(rank^(log_log_model$coefficients[2]))
+    rank=rank+1
+    if(freq_sum >= coverage){
+      break
+    }
+  }
+  rank
+}
+
+find_rank_to_coverage(linearModel, 0.5)
+``` 
+
+So for example, according to our linear log-log-model, we would need 35 words to cover 50% of all word instances. Please notice, that this does not depend on the size of the dictionary. 
+
+We expect that we need actually more words because the simulated frequency of the first few words is much higher.
+If we do the same with our sample frequency we get:
+```{r calc_coverage, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+find_rank_to_coverage_sample<-function(sample, coverage){
+  #coverage in decimal
+  freq_sum=0
+  cur_rank=1
+  repeat{
+    freq_sum=freq_sum+subset(sample, rank==cur_rank)$relativeFrequency
+    cur_rank=cur_rank+1
+    if(freq_sum >= coverage){
+      break
+    }
+  }
+  cur_rank
+}
+
+find_rank_to_coverage_sample(wordStatistics, 0.5)
+```
+
+So there is a big difference.
+
+### Eploratory analysis of bigrams and trigrams
+
+One can do similar analyses for higher order n-grams. 
+```{r ngram_stats, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+bigramStatistics<-bigrams %>% group_by(source, bigram, word1, word2, includesStopWord) %>%summarize(n=n())%>%dcast(bigram+includesStopWord +word1+word2~source, value.var="n") %>% mutate_all(funs(replace_na(.,0))) %>% mutate( frequency=blog+news+twitter) 
+
+trigramStatistics<-trigrams %>% group_by(source, trigram, word1, word2, word3, includesStopWord) %>%summarize(n=n())%>%dcast(trigram+includesStopWord+word1+word2+word3~source, value.var="n") %>% mutate_all(funs(replace_na(.,0))) %>% mutate( frequency=blog+news+twitter) 
+
+fourgramStatistics<-fourgrams %>% group_by(source, fourgram, word1, word2, word3, word4, includesStopWord) %>%summarize(n=n())%>%dcast(fourgram+includesStopWord+word1+word2+word3+word4~source, value.var="n") %>% mutate_all(funs(replace_na(.,0))) %>% mutate( frequency=blog+news+twitter) 
+
+rank<-1:nrow(bigramStatistics)
+sum_count<-sum(bigramStatistics$frequency)
+bigramStatistics<-arrange(bigramStatistics, desc(frequency)) %>% cbind(rank) %>%mutate(relativeFrequency=frequency/sum_count)
+
+rank<-1:nrow(trigramStatistics)
+sum_count<-sum(trigramStatistics$frequency)
+trigramStatistics<-arrange(trigramStatistics, desc(frequency)) %>% cbind(rank) %>%mutate(relativeFrequency=frequency/sum_count)
+
+rank<-1:nrow(fourgramStatistics)
+sum_count<-sum(fourgramStatistics$frequency)
+fourgramStatistics<-arrange(fourgramStatistics, desc(frequency)) %>% cbind(rank) %>%mutate(relativeFrequency=frequency/sum_count)
+```
+
+
+Interesting to notice: the longer the n-grams get, the more balanced the distribution is, meaning, the difference between the lower-ranked n-grams the higher-ranked n-grams gets smaller and smaller.
+
+```{r distri, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+ggplot(NULL, aes(x=rank, y=relativeFrequency))+geom_line(data=head(wordStatistics, n=500), aes(color="unigrams"), size=1)+geom_point(data=head(wordStatistics, n=500), color="grey")+geom_line(data=head(trigramStatistics, n=500), aes(color="trigrams"), size=1)+geom_point(data=head(trigramStatistics, n=500),color="steelblue2")+geom_line(data=head(bigramStatistics, n=500), aes(color="bigrams"), size=1)+geom_point(data=head(bigramStatistics, n=500),color="red")+xlab("rank")+ylab("relative frequency")+coord_cartesian(ylim=c(0, 0.01)) +scale_color_manual(name = "legend", values = c("red","steelblue2", "grey"))
+```
+
+Here we see already that it is not the case, because the distribution of bigrams is more "flat" than the distribution of the unigrams. In general one can state: The longer the n-grams get, the more balance the distribution is, meaning, the difference between the lower-ranked n-grams the higher-ranked n-grams gets smaller and smaller.
+
+
+### investigation of the relation ship between words
+
+Until now we did an investigation only based on counts. Now it would be interesting to have a look on the relationship between words. One can think about the following questions:
+
+*  What are the most common words that are part of a bigram (on first or second position)/the most common bigrams that are part of a trigram, etc.?
+
+Here we calculate the most mommon words in bigrams and compare them to the most common words:
+```{r bigrams_and_unigrams, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+library(CGPfunctions)
+pos1<-bigramStatistics%>%group_by(word1) %>%summarize(frequency=sum(frequency))
+pos2<-bigramStatistics%>%group_by(word2) %>%summarize(frequency=sum(frequency))
+wordsInBigrams<-merge(x=pos1, y=pos2,by.x= 'word1', by.y='word2' )%>%mutate(frequency=frequency.x+frequency.y)%>%rename(word=word1)%>%select( c("word", "frequency"))%>%arrange(desc(frequency))
+rank<-1:nrow(wordsInBigrams)
+wordsInBigrams<-cbind(wordsInBigrams, rank)
+comparison<-merge(wordStatistics, wordsInBigrams, by="word")%>%rename(freqeuncyUnigram=frequency.x, frequencyBigram=frequency.y, rankUnigram=rank.x, rankBigram=rank.y)%>%select(word, rankUnigram, rankBigram)%>%melt(id.vars=c("word"), measured.vars=c("rankUnigram", "rankBigram"))
+hitlist<-comparison[which(value<=30),]
+newggslopegraph(hitlist, variable, value, word, Title="word ranks", SubTitle="comparison of ranks of words as unigrams and as part of bigrams", Caption=NULL, LineColor="steelblue2", LineThickness=1)
+``` 
+
+So there is no big difference in ranks. This is also the case if we look at bigrams and trigrams.
+
+```{r trigrams_and_bigrams, cache=TRUE, warning=FALSE, message=FALSE, echo=FALSE}
+library(CGPfunctions)
+pos1<-trigramStatistics%>%group_by(word1, word2) %>%summarize(frequency=sum(frequency)) %>% mutate(bigram=str_squish(paste(word1,word2, sep=" ")))
+pos2<-trigramStatistics%>%group_by(word2, word3) %>%summarize(frequency=sum(frequency)) %>% mutate(bigram=str_squish(paste(word2,word3, sep=" ")))
+bigramsInTrigrams<-merge(x=pos1, y=pos2,by.x= 'bigram', by.y='bigram' )%>%mutate(frequency=frequency.x+frequency.y)%>%select(-c("word2.x", "frequency.x", "word2.y", "frequency.y"))%>%rename(word2=word3)%>%arrange(desc(frequency))
+rank<-1:nrow(bigramsInTrigrams)
+bigramsInTrigrams<-cbind(bigramsInTrigrams, rank)
+comparison<-merge(bigramStatistics, bigramsInTrigrams, by="bigram")%>%rename(freqeuncyBigram=frequency.x, frequencyTrigram=frequency.y, rankBigram=rank.x, rankTrigram=rank.y)%>%select(bigram, rankBigram, rankTrigram)%>%melt(id.vars=c("bigram"), measured.vars=c("rankBigram", "rankTrigram"))
+hitlist<-comparison[which(value<=30),]
+newggslopegraph(hitlist, variable, value, bigram, Title="bigram ranks", SubTitle="comparison of ranks of bigrams and as part of trigrams", Caption=NULL, LineColor="steelblue2", LineThickness=1)
+``` 
+
+
+## Statistical prediction
+
+The goal of this part is to build a n-gram model based on the previously typed 1,2 or 3 words.
+
+### Model
+
+We are going to built our first prediction algorithm. 
+
+The idea of an n-gram model is, that we predict the next word based only on the last words typed. So we forget the older history. This is kind of a markov model, that is, a model which obeys the markov property. The markov property states that, when following a sequence of events/ a process or similar, the next state depends only on the state before and not additionally on all the states before since starting the sequence. The sequence of events is then called markov chain.
+
+If one wants to model a sequence of words, one could take each word in the sequence as a single state. On base of the current word one can then predict the next word based on only the previous word. This is called a bigram model. Of course one could also use 2nd or higher order models, where two words or more build the current state.
+
+we are going to build a model for a sequence of up to $3$ words as current state. That is, we use the calculated fourgrams to predict the next word.
+
+The algorithm goes something like this:
+
+1.) If there exist at least 3 words already typed take the last 3 words and find the next word based on the fourgram frequencies.
+2.) If there esists no fourgram beginning with these 3 words OR if there are only 2 words typed already:
+3.) Find the next word based on the trigram frequencies
+4.) If there exists no trigram beginning with these 2 words OR if there is only 1 word typed already:
+5.) Find the next word based on the bigram freqencies
+6.) If there exists no bigram beginning with the word OR there was no word typed already:
+7.) Find the next word based on the unigram frequencies
+
+Actually we don't have to calculate any transition matrix for our n-gram markov model, because all the information is already there. We only select it:
+
+```{r calc_transition}
+# transition matrix for 1st order markov model
+firstOrderTransition<-select(bigramStatistics, c(word1, word2, relativeFrequency))
+
+# transition matrix for 2nd order markov model
+secondOrderTransition<-select(trigramStatistics, c(word1,word2,word3,relativeFrequency))
+
+# transition matrix for 3rd order markov model
+thirdOrderTransition<-select(fourgramStatistics, c(word1,word2,word3, word4,relativeFrequency))
+
+# transition matrix for 0 order markov model
+zeroOrderTransition<-select(wordStatistics, c(word, relativeFrequency))
+```
+
+Here are some examples of predicted words:
+```{r example}
+# the most probable words when typed "a"
+subset(firstOrderTransition, relativeFrequency == max(subset(firstOrderTransition, word1=="a")$relativeFrequency) & word1=="a")$word2
+# the most probalbe words when typed "we are"
+subset(secondOrderTransition, relativeFrequency == max(subset(secondOrderTransition, word1=="we" & word2=="are")$relativeFrequency) & word1=="we" & word2=="are")$word3
+```
+
+One can also select e.g. the $5$ most probable words:
+
+```{r}
+#example
+head(subset(arrange(firstOrderTransition, desc(relativeFrequency)), word1=="a"), n=5)$word2
+```
+
+When using the prediction algorithm we actually don't want to make queries on $4$ different tables. So we put all in one master table.
+
+```{r}
+library(data.table)
+transitionMatrix<-thirdOrderTransition
+secondOrder<-secondOrderTransition %>%rename(word4=word3, word3=word2, word2=word1)
+secondOrder$word1=''
+transitionMatrix<-rbind(transitionMatrix, secondOrder)
+firstOrder<-firstOrderTransition %>% rename(word4=word2, word3=word1)
+firstOrder$word1=''
+firstOrder$word2=''
+transitionMatrix<-rbind(transitionMatrix, firstOrder)
+zeroOrder<-zeroOrderTransition %>% rename(word4=word)
+zeroOrder$word1=''
+zeroOrder$word2=''
+zeroOrder$word3=''
+transitionMatrix<-rbind(transitionMatrix, zeroOrder)
+transition<-setDT(transitionMatrix)
+setkey(transition,relativeFrequency, word3, word2, word1)
+saveRDS(transition, "model_full.rds")
+```
+
+For performance purposes we only take the top 10 words for a word combination.
+
+```{r}
+library(data.table)
+model <- readRDS("model_full.rds")
+unigrams<-subset(model, word1=='' & word2=='' & word3=='')%>%arrange(desc(relativeFrequency))
+unigrams<-head(unigrams, n=20)
+bigrams<-subset(model, word1=='' & word2=='' & word3!='') %>% group_by(word3) %>% top_n(n=10, relativeFrequency)%>%ungroup
+trigrams<-subset(model, word1=='' & word2!='' & word3!='') %>% group_by(word2, word3) %>% top_n(n=10, relativeFrequency)%>%ungroup
+fourgrams<-subset(model, word1!='' & word2!='' & word3!='') %>% group_by(word1, word2, word3) %>% top_n(n=10, relativeFrequency)%>%ungroup
+transition<-rbind(unigrams, bigrams, trigrams, fourgrams)
+transition<-setDT(transition)
+setkey(transition,word1, word2,word3, relativeFrequency)
+saveRDS(transition, "model.rds")
+```
+
+Here we write the methods for reusage:
+
+```{r predictive_model, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+
+cleanInput<-function(input){
+  
+  convertedInput<-str_squish(input)
+  if(length(grep("[[:punct:]]$", convertedInput, value=FALSE ))>0){
+    convertedInput=''
+  }
+  else{
+    convertedInputVec<-strsplit(convertedInput, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist()
+    convertedInput<-convertedInputVec[length(convertedInputVec)] %>% tolower() %>% str_squish()
+  }
+  
+  return(convertedInput)
+}
+
+getInputVector<-function(input){
+  
+  if(length(input)==0) input=''
+  if(nchar(input)==0){
+    vec=c('', '', '')
+  }
+  else{
+    inputVectorPrep<-strsplit(input, " ")[[1]]
+    l=length(inputVectorPrep)
+    vec<-vector()
+    vec[3]<-inputVectorPrep[l]
+    if(l>1){
+      vec[2]<-inputVectorPrep[l-1]
+    }
+    if(l>2){
+      vec[1]<-inputVectorPrep[l-2]
+    }
+    
+    vec[is.na(vec)] <- ''
+    
+  }
+  vec
+}
+
+#model is globally loaded, please make sure that it is a data.table
+#model<-setDT(model)
+getNextWord<-function(input, numberOfWords) {
+  
+  cleanInput<-cleanInput(input)
+  
+  output=""
+  
+  inputVector<-getInputVector(cleanInput)
+  #use whole info
+
+  wordsWholeInfo=arrange(model[ word1==inputVector[1] & word2==inputVector[2] & word3==inputVector[3]], desc(relativeFrequency))$word4
+  output=head(wordsWholeInfo, n=numberOfWords)
+  if(length(output)<numberOfWords){
+    
+    wordsWithout1=unique(arrange(model[word1=='' & word2==inputVector[2] & word3==inputVector[3]], desc(relativeFrequency))$word4)
+    wordsWithout1=wordsWithout1[!(wordsWithout1 %in% output)]
+    output=c(output, wordsWithout1)
+    
+    if(length(output) < numberOfWords){
+      wordsWithout1And2=unique(arrange(model[word3==inputVector[3]], desc(relativeFrequency))$word4)
+      wordsWithout1And2=wordsWithout1And2[!(wordsWithout1And2 %in% output)]
+      output=c(output, wordsWithout1And2)
+      if(length(output) < numberOfWords){
+        wordsWithoutAll=unique(arrange(model, desc(relativeFrequency))$word4)
+        wordsWithoutAll=wordsWithoutAll[!(wordsWithoutAll %in% output)]
+        output=c(output, wordsWithoutAll)
+      }
+    }
+  }
+  
+  return(head(output, n=numberOfWords))
+}
+
+```
+
+#### Measure runtime
+```{r}
+unigram_start <- Sys.time()
+getNextWord("", 10)
+unigram_end <- Sys.time()
+bigram_start <- Sys.time()
+getNextWord("I",  10)
+bigram_end <- Sys.time()
+trigram_start <- Sys.time()
+getNextWord("I just", 10)
+trigram_end <- Sys.time()
+times_df<-c(unigram_end-unigram_start, bigram_end-bigram_start, trigram_end-trigram_start)
+times_df
+```
+
+### Measure accuracy
+
+```{r, warning=FALSE}
+#select random sample of texts
+#textLinesBlog<-readLines("en_US.blogs.txt", encoding="UTF-8", warn=FALSE)
+#textLinesTwitter<-readLines("en_US.twitter.txt", encoding="UTF-8", warn=FALSE)
+#textLinesNews<-readLines("en_US.news.txt", encoding="UTF-8", warn=FALSE)
+
+set.seed(111111)
+blogTest<-sample(textLinesBlog, length(textLinesBlog)*0.01)
+newsTest<-sample(textLinesNews, length(textLinesNews)*0.01)
+twitterTest<-sample(textLinesTwitter, length(textLinesTwitter)*0.01)
+
+#clean 
+#library(tidytext)
+#library(dplyr)
+#library(tidyverse)
+#library(stringi)
+blogSampleText<-paste(blogTest, " ")
+blogTest<-strsplit(blogSampleText, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist() %>% iconv( "UTF-8", "ASCII", sub="") %>% str_squish() %>% tolower()
+blogTest<-blogTest[blogTest != ""]
+newsSampleText<-paste(newsTest, " ")
+newsTest<-strsplit(newsSampleText, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist() %>% iconv( "UTF-8", "ASCII", sub="")%>% str_squish() %>% tolower()
+newsTest<-newsTest[newsTest != ""]
+twitterSampleText<-paste(twitterTest, " ")
+twitterTest<-strsplit(twitterSampleText, "([^[:alpha:]][^[:alpha:]])|^[^[:alpha:]]|[^[:alpha:]]$") %>% unlist() %>% iconv( "UTF-8", "ASCII", sub="") %>% str_squish() %>% tolower()
+twitterTest<-twitterTest[twitterTest != ""]
+
+sampleData<-data_frame(line=1:length(blogTest), source='blog', text=blogTest)
+sampleData<-rbind(sampleData, data_frame(line=1:length(newsTest), source='news', text=newsTest))
+sampleData<-rbind(sampleData, data_frame(line=1:length(twitterTest), source='twitter', text=twitterTest))
+sampleData<-sampleData[1:1000,]
+lastWordMutation<-mutate_all(sampleData, funs(stri_extract_last_words))
+sampleData$lastWord<-lastWordMutation$text
+sampleData<-mutate(sampleData, textWithoutLastWord=substring(text, 1, nchar(text)-nchar(lastWord)-1))
+```
+
+```{r df}
+start_time<-Sys.time()
+sampleData$pred<-lapply(sampleData$textWithoutLastWord, FUN=getNextWord, numberOfWords=3)
+sampleData$included<-(sampleData$lastWord %in% unlist(sampleData$pred))
+count(subset(sampleData, included==TRUE))/count(sampleData) #accuraca
+end_time<-Sys.time()
+end_time-start_time
+```
+
+For a more general benchmark testing we used the benchmark test provided by hfoffani [3].
+
+
+## References
+[1] https://www.rdocumentation.org/packages/openNLP/versions/0.2-6
+[2] https://opennlp.apache.org/
+[3] https://github.com/hfoffani/dsci-benchmark
